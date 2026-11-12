@@ -42,7 +42,7 @@ const DEFAULT_SHORTCUTS = {
   toggleIdle: '',
   toggleBreathing: '',
   toggleBlinking: '',
-  toggleHitAreas: '',
+  toggleHitAreas: 'b',
   toggleMouseTracking: '',
   togglePhysics: '',
 };

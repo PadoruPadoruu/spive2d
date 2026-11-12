@@ -204,7 +204,7 @@ class WorkerLive2DRenderer {
     const { live2d: { Live2DModel } } = PIXI;
     this._cubism2Entry = null;
     this.model = await Live2DModel.from(modelUrl, {
-      autoHitTest: false,
+      autoHitTest: true,
       autoFocus: false,
       autoUpdate: false,
       idleMotionGroup: 'None',

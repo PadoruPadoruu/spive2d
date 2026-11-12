@@ -121,6 +121,8 @@ export class Live2DRenderer extends BaseRenderer {
   #partIndexByName = new Map();
   #originalIdleGroup = 'Idle';
   #pointerMoveHandler = null;
+  #pointerDownHandler = null;
+  #pointerUpHandler = null;
   #pointerLeaveHandler = null;
   #beforeModelUpdateHandler = null;
   #lastFrameParameters = null;
@@ -132,6 +134,7 @@ export class Live2DRenderer extends BaseRenderer {
   #parameterInfluence = null;
   #pickTextures = null;
   #influenceToken = null;
+  #clickStartPos = null;
 
   constructor(isExport = false) {
     super(isExport);
@@ -179,7 +182,7 @@ export class Live2DRenderer extends BaseRenderer {
       let textureUrls = [];
       const model = await withLive2DTextureLoad(PIXI, async () => {
         const loaded = await Live2DModel.from(url, {
-          autoHitTest: false,
+          autoHitTest: true,
           autoFocus: false,
           autoUpdate: false,
           ...(appState.enableIdle ? {} : { idleMotionGroup: 'None' })
@@ -328,9 +331,28 @@ export class Live2DRenderer extends BaseRenderer {
         this.#model.internalModel.focusController.focus(0, 0);
       }
     };
+    this.#pointerDownHandler = (e) => {
+      if(e.button !== 0 || e.ctrlKey || e.metaKey || !this.#model) return;
+      this.#clickStartPos = { x: e.clientX, y: e.clientY };
+    };
+    this.#pointerUpHandler = (e) => {
+      if(!this.#clickStartPos || e.button !== 0) return;
+      
+      const dist = Math.hypot(e.clientX - this.#clickStartPos.x, e.clientY - this.#clickStartPos.y);
+      this.#clickStartPos = null;
+
+      if (dist > 5) return; // Ignore drags
+
+      const hit= this.hitTest(e.clientX, e.clientY);
+      if (hit.length > 0) {
+        this.playGestureMotion(hit[0]);
+      }
+    };
     window.addEventListener('pointermove', this.#pointerMoveHandler);
     window.addEventListener('pointerleave', this.#pointerLeaveHandler);
     document.addEventListener('mouseleave', this.#pointerLeaveHandler);
+    window.addEventListener('pointerdown', this.#pointerDownHandler);
+    window.addEventListener('pointerup', this.#pointerUpHandler);
   }
 
   #detachPointerListeners() {
@@ -338,10 +360,18 @@ export class Live2DRenderer extends BaseRenderer {
       window.removeEventListener('pointermove', this.#pointerMoveHandler);
       this.#pointerMoveHandler = null;
     }
+    if (this.#pointerUpHandler) {
+      window.removeEventListener('pointerup', this.#pointerUpHandler);
+      this.#pointerUpHandler = null;
+    }
     if (this.#pointerLeaveHandler) {
       window.removeEventListener('pointerleave', this.#pointerLeaveHandler);
       document.removeEventListener('mouseleave', this.#pointerLeaveHandler);
       this.#pointerLeaveHandler = null;
+    }
+    if (this.#pointerDownHandler) {
+      window.removeEventListener('pointerdown', this.#pointerDownHandler);
+      this.#pointerDownHandler = null;
     }
   }
 
@@ -632,6 +662,81 @@ export class Live2DRenderer extends BaseRenderer {
         }))
         .sort(sortByText),
     ];
+  }
+
+ // --- Hit Testing & Gesture Interaction ---
+  hitTest(clientX, clientY) {
+    if (!this.#model || this.#isExport || !this.#app) return [];
+    
+    // 1. Convert screen coordinates to canvas-local space
+    const canvas = this.#canvas;
+    const rect = canvas.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+
+    // 2. Map canvas point to PIXI world/stage space
+    const stagePoint = new PIXI.Point();
+    if (this.#app.stage?.toLocal) {
+      this.#app.stage.toLocal(new PIXI.Point(x, y), undefined, stagePoint);
+    } else {
+      stagePoint.set(x, y);
+    }
+
+    // 3. Convert stage coordinates into model coordinate space
+    const modelPoint = new PIXI.Point();
+    this.#model.toModelPosition(stagePoint, modelPoint);
+
+    // 4. Test against defined Live2D HitAreas
+    const hits = this.#model.hitTest(modelPoint.x, modelPoint.y);
+    console.log('[Spive2D HitTest]', { client: [clientX, clientY], model: [modelPoint.x, modelPoint.y], hits });
+    return hits || [];
+  }
+  
+  async playGestureMotion(hitAreaName) {
+    if (!this.#model || !this.#model.internalModel?.motionManager) return;
+    const motionManager = this.#model.internalModel.motionManager;
+    const definitions = motionManager.definitions || {};
+    const availableGroups = Object.keys(definitions).filter(g => definitions[g]?.length > 0);
+
+    console.log('[Spive2D Motion] HitArea:', hitAreaName, 'Available Groups:', availableGroups);
+
+    if (availableGroups.length === 0) return;
+
+    let targetGroup = null;
+    const cleanHit = hitAreaName.toLowerCase().replace(/^(hit_?area|artmesh)/i, '');
+
+    // Priority 1: Direct match containing the cleaned hit area name (e.g. "head" matches "TapHead")
+    targetGroup = availableGroups.find(g => g.toLowerCase().includes(cleanHit));
+
+    // Priority 2: Standard interactive prefixes
+    if (!targetGroup) {
+      targetGroup = availableGroups.find(g => {
+        const lower = g.toLowerCase();
+        return lower.startsWith('tap') || lower.startsWith('touch') || lower.startsWith('flick');
+      });
+    }
+
+    // Priority 3: Fallback to any non-idle motion group
+    if (!targetGroup) {
+      targetGroup = availableGroups.find(g => !g.toLowerCase().includes('idle'));
+    }
+
+    if (!targetGroup) {
+      console.warn('[Spive2D Motion] No suitable motion group found for hit area:', hitAreaName);
+      return;
+    }
+
+    const count = definitions[targetGroup].length;
+    const motionIndex = Math.floor(Math.random() * count);
+
+    console.log(`[Spive2D Motion] Triggering motion: ${targetGroup}[${motionIndex}]`);
+
+    try {
+      // Priority 3 (FORCE) runs the gesture and returns back to the idle loop upon completion
+      await this.#model.motion(targetGroup, motionIndex, 3);
+    } catch (err) {
+      console.error('[Spive2D Motion] Failed to play motion:', err);
+    }
   }
 
   setExpression(value) {
