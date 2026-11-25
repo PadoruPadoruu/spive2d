@@ -2,13 +2,13 @@
   import { onMount } from 'svelte';
   import { appState, sceneDir } from '#lib/appState.svelte.js';
   import { getRenderer, setRenderer } from '#lib/rendererStore.svelte.js';
-  import { createRenderer } from '#lib/renderer/createRenderer.js';
+  import { createRenderer, getRendererType } from '#lib/renderer/createRenderer.js';
   import { preloadManager } from '#lib/renderer/preloadManager.js';
   import { filterSceneIndices, findIdleAnimation, sanitizeInputUrl, sanitizeFilename } from '#lib/utils.js';
   import { getAssetUrl, getExportDirectory } from '#lib/fileManager.js';
   import { exportImage, exportAnimation, exportImageSequence } from '#lib/exporter.js';
   import { exportModelFiles } from '#lib/modelExporter.js';
-  import { createTransformAction } from '#lib/inputAction.js';
+  import { createTransformAction, isViewerPoint } from '#lib/inputAction.js';
   import { loadSetting, saveSetting } from '#lib/settings.js';
   import { showNotification } from '#lib/notificationStore.svelte.js';
   import { t } from '#lib/i18n.svelte.js';
@@ -21,6 +21,7 @@
   import SceneThumbnailGrid from './SceneThumbnailGrid.svelte';
   import PickOverlay from './PickOverlay.svelte';
   import HitAreaOverlay from './HitAreaOverlay.svelte';
+  import InteractionCoordinateOverlay from './InteractionCoordinateOverlay.svelte';
   import { thumbnailManager } from '#lib/thumbnailManager.svelte.js';
   import { invoke, convertFileSrc } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
@@ -44,6 +45,10 @@
   let settingsDialog = $state();
   let animController = $state();
   let shortcuts = $state(getShortcuts());
+  let interactionRestoreAnimation = '';
+  let interactionStart = null;
+  let interactionCoordinate = $state(null);
+  let coordinateProbePointerId = null;
   const transformAction = createTransformAction();
   let currentLoadId = 0;
   let loadingRenderers = [];
@@ -52,8 +57,75 @@
     shortcuts = getShortcuts();
   }
 
+  function isCoordinateProbePoint(event) {
+    if (!appState.showInteractionCoordinates || event.button !== 0 ||
+      !appState.initialized || appState.processing || dialogOpen || sceneGridOpen ||
+      !isViewerPoint(event.clientX, event.clientY) ||
+      event.clientX >= window.innerWidth - 250 ||
+      event.target?.closest?.('button, input, select, textarea, dialog, #sidebar')) return false;
+    const renderer = getRenderer();
+    const canvas = renderer?.getCanvas?.();
+    if (!renderer || !canvas) return false;
+    const rect = canvas.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right ||
+      event.clientY < rect.top || event.clientY > rect.bottom) return false;
+    return true;
+  }
+
+  function getInteractionCoordinateRecord(renderer, clientX, clientY, includeTarget = true) {
+    const canvas = renderer.getCanvas();
+    const rect = canvas.getBoundingClientRect();
+    const target = includeTarget ? renderer.getInteractionTargetAt?.(clientX, clientY) ?? '' : '';
+    const coordinates = renderer.getInteractionCoordinatesAt?.(clientX, clientY) ?? {
+      canvasX: clientX - rect.left,
+      canvasY: clientY - rect.top,
+      coordinateSpace: 'Canvas',
+    };
+    return { target, coordinates };
+  }
+
+  function updateInteractionCoordinate(renderer, clientX, clientY, record = null, includeTarget = true) {
+    const { target, coordinates } = record || getInteractionCoordinateRecord(renderer, clientX, clientY, includeTarget);
+    interactionCoordinate = { clientX, clientY, coordinates };
+    return { target, coordinates };
+  }
+
+  function handleCoordinateProbePointerDown(event) {
+    if (!isCoordinateProbePoint(event)) return;
+    const renderer = getRenderer();
+    const { target, coordinates } = updateInteractionCoordinate(renderer, event.clientX, event.clientY);
+    coordinateProbePointerId = event.pointerId;
+    console.info('[Spive2D Interaction Coordinates]', {
+      renderer: renderer.constructor?.name || 'Unknown',
+      target: target || null,
+      screen: { x: event.clientX, y: event.clientY },
+      canvas: { x: coordinates.canvasX, y: coordinates.canvasY },
+      model: Number.isFinite(coordinates.modelX) && Number.isFinite(coordinates.modelY)
+        ? { space: coordinates.coordinateSpace, x: coordinates.modelX, y: coordinates.modelY }
+        : null,
+    });
+  }
+
+  function handleCoordinateProbePointerMove(event) {
+    if (!appState.showInteractionCoordinates || event.pointerId !== coordinateProbePointerId) return;
+    const renderer = getRenderer();
+    if (!renderer) return;
+    const rect = renderer.getCanvas()?.getBoundingClientRect?.();
+    if (!rect || event.clientX < rect.left || event.clientX > rect.right ||
+      event.clientY < rect.top || event.clientY > rect.bottom) return;
+    updateInteractionCoordinate(renderer, event.clientX, event.clientY, null, false);
+  }
+
+  function handleCoordinateProbePointerUp(event) {
+    if (event.pointerId === coordinateProbePointerId) coordinateProbePointerId = null;
+  }
+
   onMount(() => {
     initBackground();
+    window.addEventListener('pointerdown', handleCoordinateProbePointerDown, true);
+    window.addEventListener('pointermove', handleCoordinateProbePointerMove, true);
+    window.addEventListener('pointerup', handleCoordinateProbePointerUp, true);
+    window.addEventListener('pointercancel', handleCoordinateProbePointerUp, true);
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const modelUrl = params.get('model');
@@ -74,6 +146,10 @@
       processPath(event.payload.paths);
     });
     return async () => {
+      window.removeEventListener('pointerdown', handleCoordinateProbePointerDown, true);
+      window.removeEventListener('pointermove', handleCoordinateProbePointerMove, true);
+      window.removeEventListener('pointerup', handleCoordinateProbePointerUp, true);
+      window.removeEventListener('pointercancel', handleCoordinateProbePointerUp, true);
       (await unlistenProgress)();
       (await unlistenDragDrop)();
     };
@@ -278,6 +354,12 @@
     const scenes = files[selectedDir];
     if (!scenes || scenes.length === 0) return;
     const fileNames = scenes[selectedScene];
+    const rendererType = getRendererType(fileNames);
+    const defaultAlphaMode = rendererType === 'live2d' ? 'pma' : rendererType === 'spine' ? 'npm' : null;
+    if (defaultAlphaMode && appState.alphaMode !== defaultAlphaMode) {
+      appState.alphaMode = defaultAlphaMode;
+      saveSetting('spive2d_alpha_mode', defaultAlphaMode);
+    }
     let renderer = await preloadManager.consumePreloaded(selectedDir, fileNames);
     if (renderer) {
       if (typeof renderer.activate === 'function') {
@@ -328,7 +410,7 @@
       canvasContainer.appendChild(canvas);
     }
     const detectedAlphaMode = renderer.getAlphaMode?.();
-    if (detectAlpha && detectedAlphaMode) {
+    if (!defaultAlphaMode && detectAlpha && detectedAlphaMode) {
       if (detectedAlphaMode !== appState.alphaMode) {
         appState.alphaMode = detectedAlphaMode;
         saveSetting('spive2d_alpha_mode', detectedAlphaMode);
@@ -345,6 +427,10 @@
     appState.propertyCategory = categories[0] || 'parameters';
     appState.resetTransform();
     appState.resetAnimation();
+    if (appState.enableInteractions) {
+      sidebar?.setSelectedAnimation('');
+      await renderer.setAnimation('');
+    }
     if (previousSkins.length > 0 && renderer.getPropertyItems && 'applySkins' in renderer && typeof renderer.applySkins === 'function') {
       const availableSkins = renderer.getPropertyItems('skins') || [];
       const matchingSkins = previousSkins.filter(skinName => availableSkins.some(s => s.name === skinName));
@@ -354,6 +440,12 @@
     }
     sidebar?.setSelectedExpression('');
     sidebar?.refreshProperties();
+    if (appState.enableInteractions) {
+      sidebar?.setSelectedAnimation('');
+      await renderer.setAnimation('');
+      preloadManager.triggerPreload(selectedDir, scenes, selectedScene, { detectAlpha });
+      return;
+    }
     const animations = renderer.getAnimations();
     const keepSetupPose = appState.initialized && previousAnimation === '';
     if (keepSetupPose) {
@@ -413,6 +505,78 @@
     const previousSkins = getRenderer()?.getPropertyItems?.('skins')?.filter(item => item.checked).map(item => item.name) || [];
     disposeModel(false);
     initModel(previousSkins);
+  }
+
+  function toggleInteractionMode() {
+    const renderer = getRenderer();
+    if (!appState.enableInteractions) {
+      interactionRestoreAnimation = sidebar?.getRestoreAnimation?.() || '';
+      appState.enableInteractions = true;
+      sidebar?.setSelectedAnimation('');
+      renderer?.setAnimation('');
+    } else {
+      appState.enableInteractions = false;
+      const restore = interactionRestoreAnimation || sidebar?.getRestoreAnimation?.() || '';
+      sidebar?.setSelectedAnimation(restore);
+      renderer?.setAnimation(restore);
+    }
+  }
+
+  function toggleHitAreaHints() {
+    appState.showHitAreas = !appState.showHitAreas;
+    saveSetting('spive2d_show_hit_areas', appState.showHitAreas);
+  }
+
+  function toggleInteractionCoordinates() {
+    appState.showInteractionCoordinates = !appState.showInteractionCoordinates;
+    saveSetting('spive2d_show_interaction_coordinates', appState.showInteractionCoordinates);
+    if (!appState.showInteractionCoordinates) {
+      interactionCoordinate = null;
+      coordinateProbePointerId = null;
+    }
+  }
+
+  function handleInteractionPointerDown(event) {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    const renderer = getRenderer();
+    const target = renderer?.getInteractionTargetAt?.(event.clientX, event.clientY) ?? '';
+    if (typeof renderer?.getInteractionTargetAt === 'function' && !target) return;
+    interactionStart = {
+      x: event.clientX,
+      y: event.clientY,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      target,
+      pointerId: event.pointerId,
+      dragged: false,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function handleInteractionPointerMove(event) {
+    if (!interactionStart || event.pointerId !== interactionStart.pointerId) return;
+    event.stopPropagation();
+    const dx = event.clientX - interactionStart.lastX;
+    const dy = event.clientY - interactionStart.lastY;
+    interactionStart.lastX = event.clientX;
+    interactionStart.lastY = event.clientY;
+    if (!interactionStart.dragged && Math.hypot(event.clientX - interactionStart.x, event.clientY - interactionStart.y) <= 5) return;
+    interactionStart.dragged = true;
+    getRenderer()?.applyInteractionDrag?.(dx, dy);
+  }
+
+  function handleInteractionPointerUp(event) {
+    if (!interactionStart || event.button !== 0 || event.pointerId !== interactionStart.pointerId) return;
+    event.stopPropagation();
+    const { target, dragged, pointerId } = interactionStart;
+    interactionStart = null;
+    event.currentTarget.releasePointerCapture?.(pointerId);
+    if (!dragged) getRenderer()?.triggerInteraction?.(target);
+  }
+
+  function handleInteractionPointerCancel(event) {
+    if (interactionStart?.pointerId === event.pointerId) interactionStart = null;
   }
 
   function handleAnimationChange(value) {
@@ -685,7 +849,55 @@
   />
   <SceneThumbnailGrid bind:open={sceneGridOpen} onSelect={(index) => handleSceneChange({ target: { value: index } })} />
   <div id="canvasContainer" bind:this={canvasContainer}></div>
+  {#if appState.enableInteractions}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      id="interactionLayer"
+      onpointerdown={handleInteractionPointerDown}
+      onpointermove={handleInteractionPointerMove}
+      onpointerup={handleInteractionPointerUp}
+      onpointercancel={handleInteractionPointerCancel}
+    ></div>
+  {/if}
+  {#if appState.initialized}
+    <button
+      id="interactionModeButton"
+      class:active={appState.enableInteractions}
+      onclick={toggleInteractionMode}
+      title={appState.enableInteractions ? t('disableInteractionMode') : t('enableInteractionMode')}
+      aria-pressed={appState.enableInteractions}
+    >
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+        <path d="M9 11.24V7.5a2.5 2.5 0 0 1 5 0v3.15l1.1-.44a2.02 2.02 0 0 1 2.64 1.17l.66 1.82c1.1 3.03-.49 6.38-3.52 7.48l-.28.1c-1.58.58-3.34.58-4.92 0l-.28-.1c-3.03-1.1-4.62-4.45-3.52-7.48l.66-1.82a2.02 2.02 0 0 1 2.64-1.17l-.18.03zm2-3.74V11h1V7.5a.5.5 0 0 0-1 0z"/>
+      </svg>
+    </button>
+    <button
+      id="hitAreaHintButton"
+      class:active={appState.showHitAreas}
+      onclick={toggleHitAreaHints}
+      title={t(appState.showHitAreas ? 'hideHitAreas' : 'showHitAreas')}
+      aria-label={t(appState.showHitAreas ? 'hideHitAreas' : 'showHitAreas')}
+      aria-pressed={appState.showHitAreas}
+    >
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <path d="M5 5h5v5H5zM14 4l6 3.5v7L14 18l-6-3.5v-7L14 4zM5 15h5v5H5z"/>
+      </svg>
+    </button>
+    <button
+      id="coordinateProbeButton"
+      class:active={appState.showInteractionCoordinates}
+      onclick={toggleInteractionCoordinates}
+      title={t(appState.showInteractionCoordinates ? 'hideInteractionCoordinates' : 'showInteractionCoordinates')}
+      aria-label={t(appState.showInteractionCoordinates ? 'hideInteractionCoordinates' : 'showInteractionCoordinates')}
+      aria-pressed={appState.showInteractionCoordinates}
+    >
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <path d="M3 12h17m-4-4 4 4-4 4M12 21V4m-4 4 4-4 4 4"/>
+      </svg>
+    </button>
+  {/if}
   <HitAreaOverlay />
+  <InteractionCoordinateOverlay coordinate={interactionCoordinate} />
   <PickOverlay dialogOpen={dialogOpen || sceneGridOpen} onChange={() => sidebar?.refreshProperties()} />
 </div>
 
@@ -703,7 +915,7 @@
     height: 100%;
     background-color: rgba(0, 0, 0, 0.4);
     backdrop-filter: blur(3px);
-    z-index: 2999;
+    z-index: var(--z-spinner);
   }
 
   #spinner {
@@ -725,12 +937,92 @@
     left: 0;
     width: 100%;
     height: 100%;
-    z-index: 0;
+    z-index: var(--z-model);
   }
 
   #canvasContainer :global(canvas) {
     position: absolute;
     top: 0;
     left: 0;
+    z-index: 1;
+  }
+
+  #interactionLayer {
+    position: fixed;
+    top: 0;
+    left: var(--sidebar-width);
+    right: var(--sidebar-width);
+    bottom: 80px;
+    z-index: var(--z-interaction);
+    background: transparent;
+    cursor: pointer;
+    touch-action: none;
+  }
+
+  #interactionModeButton {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    z-index: var(--z-control);
+    width: 38px;
+    height: 38px;
+    border: var(--border-color);
+    border-radius: 50%;
+    background: var(--sidebar-color);
+    color: #ccc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  }
+
+  #interactionModeButton:hover,
+  #interactionModeButton.active,
+  #hitAreaHintButton:hover,
+  #hitAreaHintButton.active,
+  #coordinateProbeButton:hover,
+  #coordinateProbeButton.active {
+    background: #555;
+    color: #fff;
+  }
+
+  #hitAreaHintButton,
+  #coordinateProbeButton {
+    position: fixed;
+    right: 12px;
+    z-index: var(--z-control);
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: var(--border-color);
+    border-radius: 50%;
+    background: var(--sidebar-color);
+    color: #ccc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  }
+
+  #hitAreaHintButton {
+    bottom: 92px;
+  }
+
+  #coordinateProbeButton {
+    bottom: 138px;
+  }
+
+  #hitAreaHintButton:hover,
+  #coordinateProbeButton:hover {
+    color: #fff;
+  }
+
+  #coordinateProbeButton:focus-visible,
+  #hitAreaHintButton:focus-visible,
+  #interactionModeButton:focus-visible {
+    outline: 2px solid #ffc440;
+    outline-offset: 2px;
   }
 </style>

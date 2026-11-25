@@ -67,7 +67,7 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    z-index: 4000;
+    z-index: var(--z-queue);
   }
 
   .queue-item {

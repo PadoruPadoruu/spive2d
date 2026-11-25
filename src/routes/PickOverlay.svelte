@@ -371,13 +371,13 @@
     left: 0;
     width: 100%;
     height: 100%;
-    z-index: 1;
+    z-index: var(--z-overlay);
     pointer-events: none;
   }
 
   .pick-menu {
     position: fixed;
-    z-index: 90;
+    z-index: var(--z-menu);
     max-width: 60vw;
     max-height: 40vh;
     margin: 0;

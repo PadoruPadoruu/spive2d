@@ -29,6 +29,13 @@
   "mergeSequential": "[Spine] Merge sequential files into one model",
   "preferArchives": "Prefer archives over same-name folders",
   "enableMouseTracking": "[Live2D] Enable mouse tracking",
+  "enableInteractions": "Enable model interactions",
+  "enableInteractionMode": "Enable interaction mode",
+  "disableInteractionMode": "Disable interaction mode",
+  "logInteractionAnimations": "Log triggered interaction animations",
+  "showInteractionCoordinates": "Show interaction coordinates",
+  "hideInteractionCoordinates": "Hide interaction coordinates",
+  "coordinateCanvas": "Canvas",
   "enablePhysics": "[Live2D] Enable physics",
   "clearThumbnailCache": "Clear Thumbnail Cache",
   "sceneThumbnails": "Scene thumbnails",
@@ -112,9 +119,10 @@
   "enableIdle": "[Live2D] Enable automatic idle motion",
   "enableBreathing": "[Live2D] Enable automatic breathing",
   "enableBlinking": "[Live2D] Enable automatic blinking",
-  "showHitAreas": "[Live2D] Show hit areas",
+  "showHitAreas": "Show interaction hit areas and margin",
+  "hideHitAreas": "Hide interaction hit areas and margin",
   "shortcutToggleLive2DIdle": "[Live2D] Toggle Idle Motion",
   "shortcutToggleLive2DBreathing": "[Live2D] Toggle Breathing",
   "shortcutToggleLive2DBlinking": "[Live2D] Toggle Blinking",
-  "shortcutToggleLive2DHitAreas": "[Live2D] Toggle Hit Areas"
+  "shortcutToggleLive2DHitAreas": "Toggle Interaction Hit Area Hints"
 }

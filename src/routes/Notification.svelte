@@ -29,7 +29,7 @@
     display: flex;
     flex-direction: column-reverse;
     gap: 10px;
-    z-index: 5000;
+    z-index: var(--z-notification);
     pointer-events: none;
   }
 

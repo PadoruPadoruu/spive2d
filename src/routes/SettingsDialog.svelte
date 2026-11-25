@@ -37,6 +37,7 @@
     { key: 'showHitAreas', storageKey: 'spive2d_show_hit_areas', labelKey: 'showHitAreas' },
     { key: 'enableMouseTracking', storageKey: 'spive2d_enable_mouse_tracking', labelKey: 'enableMouseTracking' },
     { key: 'enablePhysics', storageKey: 'spive2d_enable_physics', labelKey: 'enablePhysics' },
+    { key: 'logInteractionAnimations', storageKey: 'spive2d_log_interaction_animations', labelKey: 'logInteractionAnimations' },
   ];
   const checkboxOptions = $derived(
     CHECKBOX_SETTINGS

@@ -9,6 +9,17 @@
   --scroll-thumb-color: #ccc;
   --scroll-thumb-hover-color: #e0e0e0;
   --scroll-thumb-border: 1px solid rgba(0, 0, 0, 0.6);
+
+  --z-model: 10;
+  --z-overlay: 20;
+  --z-interaction: 30;
+  --z-sidebar: 100;
+  --z-control: 200;
+  --z-menu: 300;
+  --z-modal: 400;
+  --z-queue: 500;
+  --z-notification: 600;
+  --z-spinner: 700;
 }
 
 *,

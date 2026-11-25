@@ -88,6 +88,10 @@
     return selectedAnimation;
   }
 
+  export function getRestoreAnimation() {
+    return selectedAnimation !== '' ? selectedAnimation : lastSelectedAnimation;
+  }
+
   export function getSelectedAnimationText() {
     const anim = animations.find(a => a.value === selectedAnimation);
     return anim ? anim.name : selectedAnimation;
@@ -567,7 +571,7 @@
     height: 100vh;
     width: var(--sidebar-width);
     padding: 10px;
-    z-index: 100;
+    z-index: var(--z-sidebar);
     display: flex;
     flex-direction: column;
     font-size: var(--ui-font-size);

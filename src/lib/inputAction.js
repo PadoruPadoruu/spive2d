@@ -16,6 +16,7 @@ export function createTransformAction() {
   return function transformAction(node, { appState, sidebar, animController, dialogOpen }) {
 
     function handleMouseDown(e) {
+      if (appState.enableInteractions) return;
       if (dialogOpen || !appState.initialized || appState.processing || e.button === 2) return;
       if (e.button === 0 && isPickModifier(e)) return;
       startX = e.clientX;
@@ -29,6 +30,10 @@ export function createTransformAction() {
     function handleMouseMove(e) {
       sidebar?.setSidebarVisible?.(e.clientX <= SIDEBAR_WIDTH);
       animController?.showOnHover?.(e.clientY);
+      if (appState.enableInteractions) {
+        document.body.style.cursor = 'pointer';
+        return;
+      }
       document.body.style.cursor = 'default';
       if (e.clientX >= window.innerWidth - SIDEBAR_WIDTH) {
         document.body.style.cursor = `url("cursors/rotate_right.svg"), auto`;
@@ -60,6 +65,7 @@ export function createTransformAction() {
     }
 
     function handleWheel(e) {
+      if (appState.enableInteractions) return;
       if (dialogOpen || !appState.initialized) return;
       if (e.clientX < SIDEBAR_WIDTH || (window.innerHeight - e.clientY <= CONTROLLER_HEIGHT)) return;
       const { transform } = appState;

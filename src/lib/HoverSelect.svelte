@@ -370,7 +370,7 @@
 
   .hover-select-layer {
     position: fixed;
-    z-index: 150;
+    z-index: var(--z-menu);
     font-size: var(--ui-font-size);
   }
 

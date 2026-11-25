@@ -20,6 +20,7 @@ import {
   setLive2DAutomaticMovements,
   setLive2DPhysics,
   queueLive2DPhysicsDrag,
+  queueLive2DPhysicsInputDrag,
   applyLive2DEnginePatches,
   ensureLive2DRuntimeReady,
   getLive2DTextureUrls,
@@ -35,9 +36,9 @@ import { appState } from '../appState.svelte.js';
 
 const sortByText = createSorter(item => item.name);
 const sortById = createSorter(item => item.id);
-const MAX_DELTA_MS = 100;
+const MAX_DELTA_MS = 250;
 const FIXED_STEP_MS = 1000 / 60;
-const MAX_STEPS_PER_FRAME = 20;
+const MAX_STEPS_PER_FRAME = 30;
 const INFLUENCE_CHUNK_MS = 24;
 const INFLUENCE_MOVE_EPSILON = 1e-4;
 const INFLUENCE_OPACITY_EPSILON = 0.004;
@@ -135,6 +136,9 @@ export class Live2DRenderer extends BaseRenderer {
   #pickTextures = null;
   #influenceToken = null;
   #clickStartPos = null;
+  #interactionToken = 0;
+  #interactionTargetTrace = null;
+  //TODO: Consider adding a mechanism to cancel pending async operations when disposed, to avoid potential memory leaks or unexpected behavior.
 
   constructor(isExport = false) {
     super(isExport);
@@ -273,11 +277,11 @@ export class Live2DRenderer extends BaseRenderer {
         const now = performance.now();
         const elapsedMS = Math.min(now - this.#lastTime, MAX_DELTA_MS);
         this.#lastTime = now;
-        this.#accumulatedMS += elapsedMS * this.#speed;
+        this.#accumulatedMS += elapsedMS;
         const stepMS = this.#stepSizeMS();
         let steps = 0;
         while (this.#accumulatedMS >= stepMS && steps < MAX_STEPS_PER_FRAME) {
-          this.#stepModel(stepMS);
+          this.#stepModel(stepMS * this.#speed);
           this.#accumulatedMS -= stepMS;
           steps++;
         }
@@ -332,7 +336,7 @@ export class Live2DRenderer extends BaseRenderer {
       }
     };
     this.#pointerDownHandler = (e) => {
-      if(e.button !== 0 || e.ctrlKey || e.metaKey || !this.#model) return;
+      if(e.button !== 0 || e.ctrlKey || e.metaKey || !this.#model || e.target !== this.#canvas) return;
       this.#clickStartPos = { x: e.clientX, y: e.clientY };
     };
     this.#pointerUpHandler = (e) => {
@@ -342,11 +346,7 @@ export class Live2DRenderer extends BaseRenderer {
       this.#clickStartPos = null;
 
       if (dist > 5) return; // Ignore drags
-
-      const hit= this.hitTest(e.clientX, e.clientY);
-      if (hit.length > 0) {
-        this.playGestureMotion(hit[0]);
-      }
+      
     };
     window.addEventListener('pointermove', this.#pointerMoveHandler);
     window.addEventListener('pointerleave', this.#pointerLeaveHandler);
@@ -474,7 +474,7 @@ export class Live2DRenderer extends BaseRenderer {
     }
   }
 
-  #queuePhysicsDrag(screenX, screenY) {
+  #queuePhysicsDrag(screenX, screenY, usePhysicsInputs = false) {
     if ((!screenX && !screenY) || this.#paused) return;
     const model = this.#model;
     const internalModel = model?.internalModel;
@@ -485,7 +485,8 @@ export class Live2DRenderer extends BaseRenderer {
     const sin = Math.sin(-model.rotation);
     const localX = (screenX * cos - screenY * sin) / scale / height;
     const localY = (screenX * sin + screenY * cos) / scale / height;
-    queueLive2DPhysicsDrag(internalModel, localX, localY);
+    if (usePhysicsInputs) queueLive2DPhysicsInputDrag(internalModel, localX, localY);
+    else queueLive2DPhysicsDrag(internalModel, localX, localY);
   }
 
   resetTransform(width = window.innerWidth, height = window.innerHeight) {
@@ -612,6 +613,8 @@ export class Live2DRenderer extends BaseRenderer {
 
   async setAnimation(value) {
     if (this.#disposed || !this.#model) return;
+    ++this.#interactionToken;
+    //TODO: No longer to be circular loop in 
     if (value === '') {
       this.#currentMotion = { group: null, index: null };
       this.#cubism2ElapsedMS = 0;
@@ -688,54 +691,222 @@ export class Live2DRenderer extends BaseRenderer {
 
     // 4. Test against defined Live2D HitAreas
     const hits = this.#model.hitTest(modelPoint.x, modelPoint.y);
-    console.log('[Spive2D HitTest]', { client: [clientX, clientY], model: [modelPoint.x, modelPoint.y], hits });
+    console.debug(`[Live2DRenderer] Hit test at (${clientX}, ${clientY}) -> model space (${modelPoint.x.toFixed(2)}, ${modelPoint.y.toFixed(2)}), hits:`, hits);
     return hits || [];
   }
+
+  getInteractionTargetAt(clientX, clientY) {
+    this.#interactionTargetTrace = null;
+    const hitAreas = this.hitTest(clientX, clientY);
+    if (hitAreas.length > 0) {
+      this.#interactionTargetTrace = { target: hitAreas[0], source: 'authored-hit-area' };
+      return hitAreas[0];
+    }
+    if (!this.#model || this.#isExport) return '';
+
+    const rect = this.#canvas.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    const parts = this.#pickShapes(x, y, 'parts');
+    const drawables = this.#pickShapes(x, y, 'drawables');
+    const definitions = this.#model.internalModel?.motionManager?.definitions || {};
+    for (const target of [...parts, ...drawables]) {
+      if (target.name && this.#findHitMotions(target.name, definitions).length > 0) {
+        this.#interactionTargetTrace = {
+          target: target.name,
+          source: target.id?.startsWith('part:') ? 'named-part' : 'named-drawable',
+        };
+        return target.name;
+      }
+    }
+
+    const bounds = this.#model.getBounds();
+    //TODO: more parsing on each of the model's hit areas to determine which vertical zone the click falls into, if any.
+    if (!(bounds.height > 0) || clientY < bounds.y || clientY > bounds.y + bounds.height) return '';
+    const verticalPosition = (clientY - bounds.y) / bounds.height;
+    //Todo: master list of all possible vertical zones and their corresponding hit areas, to allow for more accurate matching.
+    var zone_list = [];
+    const zone = verticalPosition < 0.38 ? 'head' : verticalPosition < 0.72 ? 'body' : 'lowerbody';
+    if (this.#findHitMotions(zone, definitions).length === 0) return '';
+    this.#interactionTargetTrace = { target: zone, source: 'vertical-zone' };
+    return zone;
+  }
+
+  getInteractionCoordinatesAt(clientX, clientY) {
+    if (!this.#model || !this.#canvas || !this.#app) return super.getInteractionCoordinatesAt(clientX, clientY);
+    const rect = this.#canvas.getBoundingClientRect();
+    const canvasX = clientX - rect.left;
+    const canvasY = clientY - rect.top;
+    const stagePoint = new PIXI.Point();
+    if (this.#app.stage?.toLocal) {
+      this.#app.stage.toLocal(new PIXI.Point(canvasX, canvasY), undefined, stagePoint);
+    } else {
+      stagePoint.set(canvasX, canvasY);
+    }
+    const modelPoint = new PIXI.Point();
+    this.#model.toModelPosition(stagePoint, modelPoint);
+    return {
+      canvasX,
+      canvasY,
+      modelX: modelPoint.x,
+      modelY: modelPoint.y,
+      coordinateSpace: 'Cubism model',
+    };
+  }
+
+  applyInteractionDrag(screenX, screenY) {
+    this.#queuePhysicsDrag(screenX, screenY, true);
+  }
   
-  async playGestureMotion(hitAreaName) {
+  async triggerInteraction(hitAreaName = '') {
     if (!this.#model || !this.#model.internalModel?.motionManager) return;
     const motionManager = this.#model.internalModel.motionManager;
     const definitions = motionManager.definitions || {};
-    const availableGroups = Object.keys(definitions).filter(g => definitions[g]?.length > 0);
+    const motions = this.#findHitMotions(hitAreaName, definitions);
+    if (motions.length === 0) return;
+    const interactionToken = ++this.#interactionToken;
 
-    console.log('[Spive2D Motion] HitArea:', hitAreaName, 'Available Groups:', availableGroups);
-
-    if (availableGroups.length === 0) return;
-
-    let targetGroup = null;
-    const cleanHit = hitAreaName.toLowerCase().replace(/^(hit_?area|artmesh)/i, '');
-
-    // Priority 1: Direct match containing the cleaned hit area name (e.g. "head" matches "TapHead")
-    targetGroup = availableGroups.find(g => g.toLowerCase().includes(cleanHit));
-
-    // Priority 2: Standard interactive prefixes
-    if (!targetGroup) {
-      targetGroup = availableGroups.find(g => {
-        const lower = g.toLowerCase();
-        return lower.startsWith('tap') || lower.startsWith('touch') || lower.startsWith('flick');
-      });
-    }
-
-    // Priority 3: Fallback to any non-idle motion group
-    if (!targetGroup) {
-      targetGroup = availableGroups.find(g => !g.toLowerCase().includes('idle'));
-    }
-
-    if (!targetGroup) {
-      console.warn('[Spive2D Motion] No suitable motion group found for hit area:', hitAreaName);
-      return;
-    }
-
-    const count = definitions[targetGroup].length;
-    const motionIndex = Math.floor(Math.random() * count);
-
-    console.log(`[Spive2D Motion] Triggering motion: ${targetGroup}[${motionIndex}]`);
+    const { group, index: motionIndex } = motions[0];
 
     try {
-      // Priority 3 (FORCE) runs the gesture and returns back to the idle loop upon completion
-      await this.#model.motion(targetGroup, motionIndex, 3);
+      await this.#model.motion(group, motionIndex, 3);
+      this.#currentMotion = { group, index: motionIndex };
+      if (appState.logInteractionAnimations) {
+        const entry = definitions[group]?.[motionIndex];
+        console.info('[Spive2D Interaction]', {
+          renderer: 'Live2D',
+          target: hitAreaName,
+          targetSource: this.#interactionTargetTrace?.target === hitAreaName
+            ? this.#interactionTargetTrace.source
+            : 'direct-call',
+          normalizedTarget: motions[0].normalizedTarget,
+          matchedAliases: motions[0].matchedAliases,
+          matchingAnimations: motions.map(({ group: candidateGroup, index, matchedAliases }) => {
+            const candidate = definitions[candidateGroup]?.[index];
+            return {
+              name: candidate?.file || candidate?.File || `${candidateGroup}[${index}]`,
+              group: candidateGroup,
+              index,
+              matchedAliases,
+            };
+          }),
+          selectedAnimation: {
+            name: entry?.file || entry?.File || `${group}[${motionIndex}]`,
+            group,
+            index: motionIndex,
+          },
+        });
+      }
+      await this.#queueIdleAfterMotion(group, motionIndex, interactionToken);
     } catch (err) {
       console.error('[Spive2D Motion] Failed to play motion:', err);
+    }
+  }
+
+  #findHitMotions(hitAreaName, definitions) {
+    if (/^(?:ArtMesh|Part)\d+$/i.test(String(hitAreaName).trim())) return [];
+    const normalize = (value, stripInteractionPrefix = false) => {
+      let name = String(value || '').split(/[\\/]/).pop() || '';
+      name = name.replace(/\.motion\d*\.json$/i, '').toLowerCase();
+      name = name.replace(/_(kr|en|jp|ja|cn|zh)$/i, '');
+      if (stripInteractionPrefix) {
+        name = name.replace(/^(hit_?area|artmesh|part)[\s_-]*/i, '');
+      } else {
+        name = name.replace(/^(tap|touch|flick|gesture)[\s_-]*/i, '');
+      }
+      return name.replace(/[^a-z0-9]/g, '');
+    };
+    const hitName = normalize(hitAreaName, true);
+    if (!hitName) return [];
+    const hitNames = new Set([hitName]);
+    //TODO: more alias with a dynmaic list
+    if (/(head|face|hair|eye|nose|brow)/.test(hitName)) {
+      for (const name of ['head', 'face', 'hair', 'eye', 'nose', 'brow']) hitNames.add(name);
+    }
+    if (/(body|chest|xiong|waist|torso|shoulder)/.test(hitName)) {
+      for (const name of ['body', 'chest', 'xiong', 'waist', 'torso', 'shoulder']) hitNames.add(name);
+    }
+    if (/hand/.test(hitName)) hitNames.add('hand');
+    if (/(lowerbody|downbody|leg|hip|ass|thigh)/.test(hitName)) {
+      for (const name of ['lowerbody', 'downbody', 'leg', 'hip', 'ass', 'thigh']) hitNames.add(name);
+    }
+
+    const candidates = [];
+    for (const [group, entries] of Object.entries(definitions)) {
+      for (let index = 0; index < (entries?.length || 0); index++) {
+        const entry = entries[index];
+        const fileName = entry?.file || entry?.File || '';
+        const normalizedGroup = normalize(group);
+        const normalizedFile = normalize(fileName);
+        if (!normalizedGroup && !normalizedFile) continue;
+        if (`${normalizedGroup} ${normalizedFile}`.includes('idle')) continue;
+        const names = [normalizedGroup, normalizedFile].filter(Boolean);
+        const matchedAliases = [...hitNames].filter(hit =>
+          names.some(name =>
+            name === hit
+            || (name.startsWith(hit) && /^\d+$/.test(name.slice(hit.length)))
+            || (hit.startsWith(name) && name.length >= 4)
+          )
+        );
+        if (matchedAliases.length > 0) {
+          candidates.push({ group, index, normalizedTarget: hitName, matchedAliases });
+        }
+      }
+    }
+    return candidates;
+  }
+
+  async #queueIdleAfterMotion(targetGroup, motionIndex, interactionToken) {
+    if (interactionToken !== this.#interactionToken || this.#disposed || !this.#model) return;
+
+    const motionManager = this.#model.internalModel?.motionManager;
+    const definitions = motionManager?.definitions || {};
+    const targetMotion = await motionManager.loadMotion(targetGroup, motionIndex).catch(() => null);
+    const durationSeconds = targetMotion ? getLive2DMotionDuration(targetMotion) : 0;
+    if (durationSeconds > 0) {
+      await new Promise(resolve => setTimeout(resolve, (durationSeconds * 1000) / Math.max(0.01, this.#speed)));
+    }
+    if (interactionToken !== this.#interactionToken || this.#disposed || !this.#model) return;
+
+    const motionBaseName = (entry, fallback) => String(entry?.file || entry?.File || fallback)
+      .split(/[\\/]/).pop()
+      .replace(/\.motion\d*\.json$/i, '')
+      .replace(/_(kr|en|jp|ja|cn|zh)$/i, '');
+    const targetEntry = definitions[targetGroup]?.[motionIndex];
+    const targetName = motionBaseName(targetEntry, targetGroup);
+    const targetPostfix = targetName.match(/(\d+)$/)?.[1];
+    const idleMotions = [];
+    for (const [group, entries] of Object.entries(definitions)) {
+      for (let index = 0; index < (entries?.length || 0); index++) {
+        const entry = entries[index];
+        const name = motionBaseName(entry, group);
+        const idleMatch = name.match(/^(?:idle|wait)(?:[_-]?(\d+))?$/i);
+        const groupIdleMatch = group.match(/^(?:idle|wait)(?:[_-]?(\d+))?$/i);
+        if (idleMatch || groupIdleMatch) {
+          idleMotions.push({
+            group,
+            index,
+            postfix: idleMatch?.[1] ?? groupIdleMatch?.[1] ?? null,
+            isDefault: !(idleMatch?.[1] ?? groupIdleMatch?.[1]),
+          });
+        }
+      }
+    }
+    if (idleMotions.length === 0) return;
+
+    const nextPostfix = targetPostfix === undefined ? null : String(Number(targetPostfix) + 1);
+    const idleMotion = (nextPostfix && idleMotions.find(item => item.postfix === nextPostfix))
+      || idleMotions.find(item => item.isDefault)
+      || idleMotions[0];
+    const idleMotion_prefix = idleMotion.postfix ? `${idleMotion.group}_${idleMotion.postfix}` : idleMotion.group;
+    //TODO: prefix is used when 
+    try {
+      await this.#model.motion(idleMotion.group, idleMotion.index, 3);
+      if (interactionToken === this.#interactionToken) {
+        this.#currentMotion = { group: idleMotion.group, index: idleMotion.index };
+      }
+    } catch (err) {
+      console.error('[Spive2D Motion] Failed to return to idle:', err);
     }
   }
 
@@ -1190,32 +1361,25 @@ export class Live2DRenderer extends BaseRenderer {
     if (!internalModel || this.#isExport) return [];
     const map = this.#screenMapper();
     const point = [0, 0];
-    const quad = (minX, minY, maxX, maxY) => {
-      const out = new Float32Array(8);
-      const corners = [minX, minY, maxX, minY, maxX, maxY, minX, maxY];
-      for (let k = 0; k < 4; k++) {
-        map(corners[k * 2], corners[k * 2 + 1], point);
-        out[k * 2] = point[0];
-        out[k * 2 + 1] = point[1];
+    const mapVertices = vertices => {
+      const out = new Float32Array(vertices.length);
+      for (let i = 0; i + 1 < vertices.length; i += 2) {
+        map(vertices[i], vertices[i + 1], point);
+        out[i] = point[0];
+        out[i + 1] = point[1];
       }
       return out;
     };
+    const quad = (minX, minY, maxX, maxY) =>
+      mapVertices(new Float32Array([minX, minY, maxX, minY, maxX, maxY, minX, maxY]));
     const result = [];
     for (const [name, area] of Object.entries(internalModel.hitAreas ?? {})) {
       let index = area?.index ?? -1;
       if (index < 0 && area?.id) index = internalModel.getDrawableIndex?.(area.id) ?? -1;
       const vertices = index >= 0 ? internalModel.getDrawableVertices(index) : null;
       if (!vertices || vertices.length < 2) continue;
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (let j = 0; j + 1 < vertices.length; j += 2) {
-        const vx = vertices[j], vy = vertices[j + 1];
-        if (vx < minX) minX = vx;
-        if (vx > maxX) maxX = vx;
-        if (vy < minY) minY = vy;
-        if (vy > maxY) maxY = vy;
-      }
-      if (!(maxX >= minX) || !(maxY >= minY)) continue;
-      result.push({ name, polygon: quad(minX, minY, maxX, maxY) });
+      if (vertices.length < 6) continue;
+      result.push({ name, polygon: mapVertices(vertices) });
     }
     const custom = internalModel.getCustomHitAreas?.();
     const width = internalModel.originalWidth || internalModel.width;
@@ -1228,6 +1392,38 @@ export class Live2DRenderer extends BaseRenderer {
         const bottom = ((1 - rect.minY) / 2) * height;
         result.push({ name, polygon: quad(left, top, right, bottom) });
       }
+    }
+    if (result.length > 0) return result;
+
+    const definitions = internalModel.motionManager?.definitions || {};
+    for (let i = 0; i < this.#drawableIds.length; i++) {
+      const name = this.#drawableIds[i];
+      if (!name || this.#getDrawableOpacity(i) <= VISIBLE_OPACITY || this.#findHitMotions(name, definitions).length === 0) continue;
+      const vertices = internalModel.getDrawableVertices(i);
+      if (vertices?.length >= 6) result.push({ name, polygon: mapVertices(vertices) });
+    }
+    if (result.length > 0) return result;
+
+    const bounds = this.#model.getBounds();
+    const canvasRect = this.#canvas.getBoundingClientRect();
+    if (!(bounds.width > 0) || !(bounds.height > 0)) return result;
+    const left = bounds.x - canvasRect.left;
+    const top = bounds.y - canvasRect.top;
+    const right = left + bounds.width;
+    const bottom = top + bounds.height;
+    const rows = [
+      { name: 'Head zone', zone: 'head', start: 0, end: 0.38 },
+      { name: 'Body zone', zone: 'body', start: 0.38, end: 0.72 },
+      { name: 'Lower body zone', zone: 'lowerbody', start: 0.72, end: 1 },
+    ];
+    for (const row of rows) {
+      if (this.#findHitMotions(row.zone, definitions).length === 0) continue;
+      const topY = top + bounds.height * row.start;
+      const bottomY = top + bounds.height * row.end;
+      result.push({
+        name: row.name,
+        polygon: new Float32Array([left, topY, right, topY, right, bottomY, left, bottomY]),
+      });
     }
     return result;
   }
@@ -1484,9 +1680,9 @@ export class Live2DRenderer extends BaseRenderer {
   }
 
   setSpeed(speed) {
-    this.#speed = speed;
+    this.#speed = Number.isFinite(speed) ? Math.max(0.01, Math.min(speed, 10)) : 1;
     if (this.#model) {
-      this.#model._spive2dSpeed = speed;
+      this.#model._spive2dSpeed = this.#speed;
     }
   }
 
@@ -1565,7 +1761,7 @@ export class Live2DRenderer extends BaseRenderer {
   }
 
   #stepSizeMS() {
-    return FIXED_STEP_MS * Math.min(1, this.#speed > 0 ? this.#speed : 1);
+    return FIXED_STEP_MS;
   }
 
   #stepModel(stepMS) {

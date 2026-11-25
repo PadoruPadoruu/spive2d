@@ -179,7 +179,7 @@
     display: flex;
     align-items: center;
     gap: 15px;
-    z-index: 2000;
+    z-index: var(--z-control);
     min-width: fit-content;
   }
 

@@ -234,10 +234,25 @@ const PHYSICS_DRAG_MAX_STEP = 0.25;
 function clearLive2DPhysicsDrag(internalModel) {
   const drag = internalModel?.__spive2dPhysicsDrag;
   if (drag) drag.x = drag.y = 0;
+  const inputDrag = internalModel?.__spive2dPhysicsInputDrag;
+  if (inputDrag) inputDrag.x = inputDrag.y = 0;
 }
 
 function takeLive2DPhysicsDrag(internalModel) {
   const drag = internalModel.__spive2dPhysicsDrag;
+  if (!drag || (!drag.x && !drag.y)) return null;
+  let { x, y } = drag;
+  drag.x = drag.y = 0;
+  const length = Math.hypot(x, y);
+  if (length > PHYSICS_DRAG_MAX_STEP) {
+    x *= PHYSICS_DRAG_MAX_STEP / length;
+    y *= PHYSICS_DRAG_MAX_STEP / length;
+  }
+  return { x, y };
+}
+
+function takeLive2DPhysicsInputDrag(internalModel) {
+  const drag = internalModel.__spive2dPhysicsInputDrag;
   if (!drag || (!drag.x && !drag.y)) return null;
   let { x, y } = drag;
   drag.x = drag.y = 0;
@@ -262,12 +277,56 @@ function shiftCubism4PhysicsParticles(rig, x, y) {
   }
 }
 
+function applyCubism4PhysicsInputDrag(rig, coreModel, drag, evaluate, receiver, args) {
+  const values = coreModel?._parameterValues;
+  const mins = coreModel?._parameterMinimumValues;
+  const maxs = coreModel?._parameterMaximumValues;
+  if (!values || typeof values.length !== 'number') return evaluate.apply(receiver, args);
+
+  const originals = new Map();
+  const inputs = rig.inputs;
+  const count = inputs?.getSize?.() ?? inputs?.size ?? 0;
+  for (let i = 0; i < count; i++) {
+    const input = inputs.at(i);
+    const source = input?.source;
+    let parameterIndex = input?.sourceParameterIndex ?? -1;
+    if (parameterIndex < 0 && source?.id && typeof coreModel.getParameterIndex === 'function') {
+      parameterIndex = coreModel.getParameterIndex(source.id);
+      input.sourceParameterIndex = parameterIndex;
+    }
+    if (!(parameterIndex >= 0 && parameterIndex < values.length)) continue;
+
+    const delta = input.type === 0
+      ? drag.x
+      : input.type === 1
+        ? drag.y
+        : drag.x - drag.y;
+    const range = (maxs?.[parameterIndex] ?? 0) - (mins?.[parameterIndex] ?? 0);
+    if (!delta || !(range > 0)) continue;
+    if (!originals.has(parameterIndex)) originals.set(parameterIndex, values[parameterIndex]);
+    values[parameterIndex] = Math.max(
+      mins[parameterIndex],
+      Math.min(maxs[parameterIndex], values[parameterIndex] + delta * range * 0.5)
+    );
+  }
+
+  try {
+    return evaluate.apply(receiver, args);
+  } finally {
+    for (const [index, value] of originals) values[index] = value;
+  }
+}
+
 function installLive2DPhysicsDrag(internalModel, physics) {
   if (physics.__spive2dPhysicsDrag) return;
   physics.__spive2dPhysicsDrag = true;
   if (physics._physicsRig && typeof physics.evaluate === 'function') {
     const evaluate = physics.evaluate;
     physics.evaluate = function (...args) {
+      const inputDrag = takeLive2DPhysicsInputDrag(internalModel);
+      if (inputDrag) {
+        return applyCubism4PhysicsInputDrag(this._physicsRig, args[0], inputDrag, evaluate, this, args);
+      }
       const drag = takeLive2DPhysicsDrag(internalModel);
       if (drag && this._physicsRig) {
         shiftCubism4PhysicsParticles(this._physicsRig, drag.x * PHYSICS_DRAG_SCALE_CUBISM4, drag.y * PHYSICS_DRAG_SCALE_CUBISM4);
@@ -296,6 +355,19 @@ export function queueLive2DPhysicsDrag(internalModel, x, y) {
   if (!physics || !Number.isFinite(x) || !Number.isFinite(y)) return;
   installLive2DPhysicsDrag(internalModel, physics);
   const drag = internalModel.__spive2dPhysicsDrag || (internalModel.__spive2dPhysicsDrag = { x: 0, y: 0 });
+  drag.x += x;
+  drag.y += y;
+}
+
+export function queueLive2DPhysicsInputDrag(internalModel, x, y) {
+  const physics = internalModel?.physics;
+  if (!physics || !Number.isFinite(x) || !Number.isFinite(y)) return;
+  if (!physics._physicsRig || typeof physics.evaluate !== 'function') {
+    queueLive2DPhysicsDrag(internalModel, x, y);
+    return;
+  }
+  installLive2DPhysicsDrag(internalModel, physics);
+  const drag = internalModel.__spive2dPhysicsInputDrag || (internalModel.__spive2dPhysicsInputDrag = { x: 0, y: 0 });
   drag.x += x;
   drag.y += y;
 }

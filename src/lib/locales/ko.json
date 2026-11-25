@@ -29,6 +29,13 @@
   "mergeSequential": "[Spine] 연번 파일을 하나로 합성하여 불러오기",
   "preferArchives": "같은 이름의 폴더보다 아카이브 우선",
   "enableMouseTracking": "[Live2D] 마우스 트래킹 활성화",
+  "enableInteractions": "모델 상호작용 활성화",
+  "enableInteractionMode": "상호작용 모드 활성화",
+  "disableInteractionMode": "상호작용 모드 비활성화",
+  "logInteractionAnimations": "실행된 상호작용 애니메이션 기록",
+  "showInteractionCoordinates": "상호작용 좌표 표시",
+  "hideInteractionCoordinates": "상호작용 좌표 숨기기",
+  "coordinateCanvas": "캔버스",
   "enablePhysics": "[Live2D] 물리 연산 활성화",
   "clearThumbnailCache": "썸네일 캐시 삭제",
   "sceneThumbnails": "장면 썸네일",
@@ -112,9 +119,10 @@
   "enableIdle": "[Live2D] 자동 대기 모션 활성화",
   "enableBreathing": "[Live2D] 자동 호흡 활성화",
   "enableBlinking": "[Live2D] 자동 눈 깜빡임 활성화",
-  "showHitAreas": "[Live2D] 히트 영역 표시",
+  "showHitAreas": "상호작용 히트 영역 및 여백 표시",
+  "hideHitAreas": "상호작용 히트 영역 및 여백 숨기기",
   "shortcutToggleLive2DIdle": "[Live2D] 대기 모션 전환",
   "shortcutToggleLive2DBreathing": "[Live2D] 호흡 전환",
   "shortcutToggleLive2DBlinking": "[Live2D] 눈 깜빡임 전환",
-  "shortcutToggleLive2DHitAreas": "[Live2D] 히트 영역 표시 전환"
+  "shortcutToggleLive2DHitAreas": "상호작용 히트 영역 힌트 전환"
 }

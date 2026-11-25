@@ -33,6 +33,7 @@ import {
   stripExtension
 } from './SpineMask.js';
 import { createSorter } from '../utils.js';
+import { appState } from '../appState.svelte.js';
 import { meshContainsPoint, toTriangles } from '../pick.js';
 
 const sortByDisplayName = createSorter(item => item.displayName || item.name);
@@ -88,6 +89,7 @@ export class SpineRendererBase extends BaseRenderer {
   _dirName = '';
   _fileNames = null;
   _skeletons = {};
+  _interactionTargetTrace = null;
   _animationStates = [];
   _alphaMode = 'pma';
   _effectiveAlphaMode = 'pma';
@@ -1866,6 +1868,207 @@ export class SpineRendererBase extends BaseRenderer {
       if (entry.skeleton.data.findAnimation(value)) {
         entry.state.setAnimation(0, value, true);
       }
+    }
+  }
+
+  getInteractionTargetAt(clientX, clientY) {
+    this._interactionTargetTrace = null;
+    if (!this._ctx || !this._mvp || this.isExport || this._thumbnail) return '';
+    const rect = this._canvas.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return '';
+    const m = this._mvp.values;
+    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = 1 - ((clientY - rect.top) / rect.height) * 2;
+    const offsetX = ndcX - m[12];
+    const offsetY = ndcY - m[13];
+    const determinant = m[0] * m[5] - m[4] * m[1];
+    if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-10) return '';
+    const worldX = (offsetX * m[5] - m[4] * offsetY) / determinant;
+    const worldY = (m[0] * offsetY - offsetX * m[1]) / determinant;
+
+    const boundsType = this._spine?.SkeletonBounds;
+    if (typeof boundsType === 'function') {
+      const keys = this._getSortedSkeletonKeys().reverse();
+      for (const key of keys) {
+        const skeleton = this._skeletons[key]?.skeleton;
+        if (!skeleton) continue;
+        const bounds = new boundsType();
+        bounds.update(skeleton, true);
+        const hit = bounds.containsPoint(worldX, worldY);
+        if (hit?.name && this._findInteractionAnimations(hit.name).length > 0) {
+          this._interactionTargetTrace = { target: hit.name, source: 'bounding-box' };
+          return hit.name;
+        }
+      }
+    }
+
+    for (const hit of this._pickAttachments(clientX, clientY)) {
+      if (hit.name && this._findInteractionAnimations(hit.name).length > 0) {
+        this._interactionTargetTrace = { target: hit.name, source: 'named-attachment' };
+        return hit.name;
+      }
+    }
+
+    const primary = this._getPrimarySkeleton()?.entry;
+    const fitBounds = primary && this._getFitBounds(primary, 1.15);
+    if (!fitBounds?.offset || !fitBounds?.size) return '';
+    const ratioX = this._canvas.width / rect.width;
+    const ratioY = this._canvas.height / rect.height;
+    const corners = [
+      this._projectToPixel(fitBounds.offset.x, fitBounds.offset.y),
+      this._projectToPixel(fitBounds.offset.x + fitBounds.size.x, fitBounds.offset.y),
+      this._projectToPixel(fitBounds.offset.x, fitBounds.offset.y + fitBounds.size.y),
+      this._projectToPixel(fitBounds.offset.x + fitBounds.size.x, fitBounds.offset.y + fitBounds.size.y),
+    ];
+    const top = rect.top + Math.min(...corners.map(point => point.py / ratioY));
+    const bottom = rect.top + Math.max(...corners.map(point => point.py / ratioY));
+    const left = rect.left + Math.min(...corners.map(point => point.px / ratioX));
+    const right = rect.left + Math.max(...corners.map(point => point.px / ratioX));
+    if (clientX < left || clientX > right || clientY < top || clientY > bottom || bottom <= top) return '';
+    const position = (clientY - top) / (bottom - top);
+    const zone = position < 0.38 ? 'head' : position < 0.72 ? 'body' : 'lowerbody';
+    if (this._findInteractionAnimations(zone).length === 0) return '';
+    this._interactionTargetTrace = { target: zone, source: 'vertical-zone' };
+    return zone;
+  }
+
+  getInteractionCoordinatesAt(clientX, clientY) {
+    if (!this._ctx || !this._mvp) return super.getInteractionCoordinatesAt(clientX, clientY);
+    const rect = this._canvas.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return null;
+    const m = this._mvp.values;
+    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = 1 - ((clientY - rect.top) / rect.height) * 2;
+    const offsetX = ndcX - m[12];
+    const offsetY = ndcY - m[13];
+    const determinant = m[0] * m[5] - m[4] * m[1];
+    if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-10) return null;
+    return {
+      canvasX: clientX - rect.left,
+      canvasY: clientY - rect.top,
+      modelX: (offsetX * m[5] - m[4] * offsetY) / determinant,
+      modelY: (m[0] * offsetY - offsetX * m[1]) / determinant,
+      coordinateSpace: 'Spine world',
+    };
+  }
+
+  getHitAreas() {
+    if (!this._ctx || !this._mvp || this.isExport || this._thumbnail) return [];
+    const rect = this._canvas.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return [];
+    const ratioX = this._canvas.width / rect.width;
+    const ratioY = this._canvas.height / rect.height;
+    const project = vertices => {
+      const polygon = new Float32Array(vertices.length);
+      for (let i = 0; i + 1 < vertices.length; i += 2) {
+        const point = this._projectToPixel(vertices[i], vertices[i + 1]);
+        polygon[i] = point.px / ratioX;
+        polygon[i + 1] = point.py / ratioY;
+      }
+      return polygon;
+    };
+    const boundsType = this._spine?.SkeletonBounds;
+    const authoredAreas = [];
+    if (typeof boundsType === 'function') {
+      for (const key of this._getSortedSkeletonKeys()) {
+        const skeleton = this._skeletons[key]?.skeleton;
+        if (!skeleton) continue;
+        const bounds = new boundsType();
+        bounds.update(skeleton, true);
+        for (let i = 0; i < (bounds.polygons?.length || 0); i++) {
+          const vertices = bounds.polygons[i];
+          const attachment = bounds.boundingBoxes?.[i];
+          if (vertices?.length >= 6) authoredAreas.push({ name: attachment?.name || 'Hit Area', polygon: project(vertices) });
+        }
+      }
+    }
+    if (authoredAreas.length > 0) return authoredAreas;
+
+    const namedAttachments = [];
+    for (const key of this._getSortedSkeletonKeys()) {
+      const skeleton = this._skeletons[key]?.skeleton;
+      if (!skeleton) continue;
+      for (const slot of skeleton.drawOrder || skeleton.slots) {
+        const attachment = getSlotAttachment(slot);
+        if (!attachment || !this._pickableTriangles(attachment)) continue;
+        const name = attachment.name || slot.data?.name || '';
+        if (!name || this._findInteractionAnimations(name).length === 0) continue;
+        const vertices = this._attachmentWorldVertices(slot, attachment);
+        if (vertices?.length >= 6) namedAttachments.push({ name, polygon: project(vertices) });
+      }
+    }
+    if (namedAttachments.length > 0) return namedAttachments;
+
+    const primary = this._getPrimarySkeleton()?.entry;
+    const fitBounds = primary && this._getFitBounds(primary, 1.15);
+    if (!fitBounds?.offset || !fitBounds?.size) return [];
+    const corners = [
+      this._projectToPixel(fitBounds.offset.x, fitBounds.offset.y),
+      this._projectToPixel(fitBounds.offset.x + fitBounds.size.x, fitBounds.offset.y),
+      this._projectToPixel(fitBounds.offset.x, fitBounds.offset.y + fitBounds.size.y),
+      this._projectToPixel(fitBounds.offset.x + fitBounds.size.x, fitBounds.offset.y + fitBounds.size.y),
+    ];
+    const left = Math.min(...corners.map(point => point.px / ratioX));
+    const right = Math.max(...corners.map(point => point.px / ratioX));
+    const top = Math.min(...corners.map(point => point.py / ratioY));
+    const bottom = Math.max(...corners.map(point => point.py / ratioY));
+    if (!(right > left) || !(bottom > top)) return [];
+    return [
+      { name: 'Head zone', polygon: new Float32Array([left, top, right, top, right, top + (bottom - top) * 0.38, left, top + (bottom - top) * 0.38]) },
+      { name: 'Body zone', polygon: new Float32Array([left, top + (bottom - top) * 0.38, right, top + (bottom - top) * 0.38, right, top + (bottom - top) * 0.72, left, top + (bottom - top) * 0.72]) },
+      { name: 'Lower body zone', polygon: new Float32Array([left, top + (bottom - top) * 0.72, right, top + (bottom - top) * 0.72, right, bottom, left, bottom]) },
+    ].filter((area, index) => this._findInteractionAnimations(['head', 'body', 'lowerbody'][index]).length > 0);
+  }
+
+  _findInteractionAnimations(target) {
+    if (/^(?:artmesh|part|boundingbox|hitarea|attachment|slot)\d+$/i.test(String(target).replace(/[^a-z0-9]/gi, ''))) {
+      return [];
+    }
+    const words = value => String(value || '')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+    const targetWords = words(target).filter(word =>
+      !['hit', 'area', 'bounding', 'box', 'part', 'attachment', 'tap', 'touch', 'flick', 'gesture', 'click'].includes(word)
+    );
+    if (targetWords.length === 0) return [];
+    const targetName = targetWords.join('');
+    const aliases = new Set(targetWords);
+    if (/(head|face|hair|eye|nose|brow)/.test(targetName)) {
+      for (const word of ['head', 'face', 'hair', 'eye', 'nose', 'brow']) aliases.add(word);
+    }
+    if (!/(lowerbody|downbody)/.test(targetName) && /(body|chest|xiong|waist|torso|shoulder)/.test(targetName)) {
+      for (const word of ['body', 'chest', 'xiong', 'waist', 'torso', 'shoulder']) aliases.add(word);
+    }
+    if (/(lowerbody|downbody|leg|hip|ass|thigh)/.test(targetName)) {
+      for (const word of ['lowerbody', 'downbody', 'leg', 'hip', 'ass', 'thigh']) aliases.add(word);
+    }
+    if (targetName.includes('hand')) aliases.add('hand');
+
+    return this.getAnimations().flatMap(animation => {
+      const matchedWords = words(animation.name).filter(word => aliases.has(word));
+      return matchedWords.length > 0
+        ? [{ ...animation, matchedWords, normalizedTarget: targetWords.join(' '), aliases: [...aliases] }]
+        : [];
+    });
+  }
+
+  async triggerInteraction(target = '') {
+    const matches = this._findInteractionAnimations(target);
+    const animation = matches[0];
+    if (!animation) return;
+    await this.setAnimation(animation.value);
+    if (appState.logInteractionAnimations) {
+      console.info('[Spive2D Interaction]', {
+        renderer: 'Spine',
+        target,
+        targetSource: this._interactionTargetTrace?.target === target ? this._interactionTargetTrace.source : 'direct-call',
+        normalizedTarget: animation.normalizedTarget,
+        aliases: animation.aliases,
+        matchingAnimations: matches.map(match => ({ name: match.name, value: match.value, matchedWords: match.matchedWords })),
+        selectedAnimation: { name: animation.name, value: animation.value },
+      });
     }
   }
 

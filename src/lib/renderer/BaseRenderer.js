@@ -57,6 +57,13 @@ export class BaseRenderer {
   async setAnimation(value) {
   }
 
+  async triggerInteraction(hitAreaName = '') {
+  }
+
+  getInteractionCoordinatesAt(clientX, clientY) {
+    return null;
+  }
+
   getExpressions() {
     return null;
   }

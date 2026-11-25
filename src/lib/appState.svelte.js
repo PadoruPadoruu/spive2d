@@ -53,6 +53,9 @@ let enableBlinking = $state(loadSetting('spive2d_enable_blinking', legacyAutomat
 let showHitAreas = $state(loadSetting('spive2d_show_hit_areas', 'false') === 'true');
 let enablePhysics = $state(loadSetting('spive2d_enable_physics', 'true') === 'true');
 let enableMouseTracking = $state(loadSetting('spive2d_enable_mouse_tracking', 'false') === 'true');
+let enableInteractions = $state(false);
+let logInteractionAnimations = $state(loadSetting('spive2d_log_interaction_animations', 'false') === 'true');
+let showInteractionCoordinates = $state(loadSetting('spive2d_show_interaction_coordinates', 'false') === 'true');
 const SCALE_MAX = 16;
 const SCALE_MIN = 0.125;
 export function sceneDir(dir, scene) {
@@ -106,6 +109,12 @@ export const appState = {
   set enablePhysics(v) { enablePhysics = v; },
   get enableMouseTracking() { return enableMouseTracking; },
   set enableMouseTracking(v) { enableMouseTracking = v; },
+  get enableInteractions() { return enableInteractions; },
+  set enableInteractions(v) { enableInteractions = v; },
+  get logInteractionAnimations() { return logInteractionAnimations; },
+  set logInteractionAnimations(v) { logInteractionAnimations = v; },
+  get showInteractionCoordinates() { return showInteractionCoordinates; },
+  set showInteractionCoordinates(v) { showInteractionCoordinates = v; },
   get skipUnity() { return skipUnity; },
   set skipUnity(v) { skipUnity = v; },
   SCALE_MAX,

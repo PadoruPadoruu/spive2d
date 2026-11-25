@@ -29,6 +29,13 @@
   "mergeSequential": "[Spine] 将连番文件合并为一个模型",
   "preferArchives": "同名时优先读取压缩包",
   "enableMouseTracking": "[Live2D] 启用鼠标追随",
+  "enableInteractions": "启用模型互动",
+  "enableInteractionMode": "启用互动模式",
+  "disableInteractionMode": "关闭互动模式",
+  "logInteractionAnimations": "记录触发的互动动画",
+  "showInteractionCoordinates": "显示交互坐标",
+  "hideInteractionCoordinates": "隐藏交互坐标",
+  "coordinateCanvas": "画布",
   "enablePhysics": "[Live2D] 启用物理模拟",
   "clearThumbnailCache": "清除缩略图缓存",
   "sceneThumbnails": "场景缩略图",
@@ -112,9 +119,10 @@
   "enableIdle": "[Live2D] 启用自动待机动作",
   "enableBreathing": "[Live2D] 启用自动呼吸",
   "enableBlinking": "[Live2D] 启用自动眨眼",
-  "showHitAreas": "[Live2D] 显示点击区域",
+  "showHitAreas": "显示交互命中区域和边距",
+  "hideHitAreas": "隐藏交互命中区域和边距",
   "shortcutToggleLive2DIdle": "[Live2D] 切换待机动作",
   "shortcutToggleLive2DBreathing": "[Live2D] 切换呼吸",
   "shortcutToggleLive2DBlinking": "[Live2D] 切换眨眼",
-  "shortcutToggleLive2DHitAreas": "[Live2D] 切换点击区域显示"
+  "shortcutToggleLive2DHitAreas": "切换交互命中区域提示"
 }

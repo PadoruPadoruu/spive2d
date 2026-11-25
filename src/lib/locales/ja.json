@@ -29,6 +29,13 @@
   "mergeSequential": "[Spine] 連番ファイルを重ねて読み込む",
   "preferArchives": "同名フォルダよりアーカイブを優先",
   "enableMouseTracking": "[Live2D] マウス追従を有効にする",
+  "enableInteractions": "モデルインタラクションを有効にする",
+  "enableInteractionMode": "インタラクションモードを有効にする",
+  "disableInteractionMode": "インタラクションモードを無効にする",
+  "logInteractionAnimations": "実行されたインタラクションアニメーションをログに記録",
+  "showInteractionCoordinates": "インタラクション座標を表示",
+  "hideInteractionCoordinates": "インタラクション座標を非表示",
+  "coordinateCanvas": "キャンバス",
   "enablePhysics": "[Live2D] 物理演算を有効にする",
   "clearThumbnailCache": "サムネイルキャッシュを削除",
   "sceneThumbnails": "シーンのサムネイル",
@@ -112,9 +119,10 @@
   "enableIdle": "[Live2D] 自動アイドリングを有効にする",
   "enableBreathing": "[Live2D] 自動呼吸を有効にする",
   "enableBlinking": "[Live2D] 自動まばたきを有効にする",
-  "showHitAreas": "[Live2D] 当たり判定を表示する",
+  "showHitAreas": "インタラクション判定領域と余白を表示",
+  "hideHitAreas": "インタラクション判定領域と余白を非表示",
   "shortcutToggleLive2DIdle": "[Live2D] アイドリングの切替",
   "shortcutToggleLive2DBreathing": "[Live2D] 呼吸の切替",
   "shortcutToggleLive2DBlinking": "[Live2D] まばたきの切替",
-  "shortcutToggleLive2DHitAreas": "[Live2D] 当たり判定表示の切替"
+  "shortcutToggleLive2DHitAreas": "インタラクション判定領域ヒントの切替"
 }
